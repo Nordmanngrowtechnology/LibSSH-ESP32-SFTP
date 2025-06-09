@@ -1,41 +1,108 @@
+#include <Arduino.h>
+#include <WiFi.h>
+
+#define USE_SERIAL Serial
+
+#include "libssh_esp32.h" // inti the lib with libssh_begin() call construtor and auto _ssh_init
+#include <libssh/libssh.h> // << add the main function
+//#include <libssh/sftp.h> // << add sftp
+
+
 
 // Set local WiFi credentials below.
-const char *configSTASSID = "YourWiFiSSID";
-const char *configSTAPSK = "YourWiFiPSK";
+wifi WiFi;
+const char *ssid = "YourWiFiSSID";
+const char *password = "YourWiFiPSK";
 
-#include "WiFi.h"
-#include "libssh_esp32.h"
+// SSH connection
+const char *host = "localhost";
+const char *user = "user_name";
+int verbosity = 1;
+
+ssh_session connect_ssh(const char *host, const char *user,int verbosity){
+  ssh_session session;
+  int auth=0;
+
+  session=ssh_new();
+  if (session == NULL) {
+    return NULL;
+  }
+
+  if(user != NULL){
+    if (ssh_options_set(session, SSH_OPTIONS_USER, user) < 0) {
+      ssh_free(session);
+      return NULL;
+    }
+  }
+
+  if (ssh_options_set(session, SSH_OPTIONS_HOST, host) < 0) {
+    ssh_free(session);
+    return NULL;
+  }
+  ssh_options_set(session, SSH_OPTIONS_LOG_VERBOSITY, &verbosity);
+  if(ssh_connect(session)){
+    fprintf(stderr,"Connection failed : %s\n",ssh_get_error(session));
+    ssh_disconnect(session);
+    ssh_free(session);
+    return NULL;
+  }
+  if(verify_knownhost(session)<0){
+    ssh_disconnect(session);
+    ssh_free(session);
+    return NULL;
+  }
+  auth=authenticate_console(session);
+  if(auth==SSH_AUTH_SUCCESS){
+    return session;
+  } else if(auth==SSH_AUTH_DENIED){
+    fprintf(stderr,"Authentication failed\n");
+  } else {
+    fprintf(stderr,"Error while authenticating : %s\n",ssh_get_error(session));
+  }
+  ssh_disconnect(session);
+  ssh_free(session);
+  return NULL;
+}
+
+// open SFTP session
+#define DATALEN 65536
+static void do_sftp(ssh_session session){
+    sftp_session sftp=sftp_new(session);
+    sftp_dir dir;
+    sftp_attributes file;
+    sftp_statvfs_t sftpstatvfs;
+    struct statvfs sysstatvfs;
+    sftp_file fichier;
+    sftp_file to;
+    int len=1;
+    unsigned int i;
+    char data[DATALEN]={0};
+    char *lnk;
+
+    unsigned int count;
+
+    if(!sftp){
+        fprintf(stderr, "sftp error initialising channel: %s\n",
+            ssh_get_error(session));
+        return;
+    }
+    if(sftp_init(sftp)){
+        fprintf(stderr, "error initialising sftp: %s\n",
+            ssh_get_error(session));
+        return;
+    }
+
+    printf("Additional SFTP extensions provided by the server:\n");
+    count = sftp_extensions_get_count(sftp);
+    for (i = 0; i < count; i++) {
+      printf("\t%s, version: %s\n",
+          sftp_extensions_get_name(sftp, i),
+          sftp_extensions_get_data(sftp, i));
+    }
+
 
 // Based on https://api.libssh.org/stable/libssh_tutor_sftp.html
 
-// Opening and closing a SFTP session
-int sftp_open_closing(ssh_session session)
-{
-    sftp_session sftp;
-    int rc;
-
-    sftp = sftp_new(session);
-    if (sftp == NULL)
-    {
-        fprintf(stderr, "Error allocating SFTP session: %s\n",
-                ssh_get_error(session));
-        return SSH_ERROR;
-    }
-
-    rc = sftp_init(sftp);
-    if (rc != SSH_OK)
-    {
-        fprintf(stderr, "Error initializing SFTP session: code %d.\n",
-                sftp_get_error(sftp));
-        sftp_free(sftp);
-        return rc;
-    }
-
-    ...
-
-    sftp_free(sftp);
-    return SSH_OK;
-}
 
 // Creating a directory
 #include <sys/stat.h>
@@ -211,9 +278,56 @@ int sftp_list_dir(ssh_session session, sftp_session sftp)
 
 void setup()
 {
-    Serial.begin(115200);
+    USE_SERIAL.begin(115200);
+
+     wifi.begin(ssid, password);
+     wifi.setSleep(false);
+
+  USE_SERIAL.print("WiFi connecting");
+  while (wifi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  USE_SERIAL.println("");
+  USE_SERIAL.println("WiFi connected");
+
+  startCameraServer();
+
+  USE_SERIAL.print("IP: ");
+  USE_SERIAL.print(wifi.localIP());
+  USE_SERIAL.println("' ...");
+}
 }
 
 void loop()
 {
+    if ((wifi.status() == WL_CONNECTED)) {
+    
+    
+    // https://github.com/codinn/libssh/blob/master/INSTALL
+    //ssh_session session;
+    // build ssh session
+    session = connect_ssh("localhost", NULL, 0);
+    if (session == NULL) {
+        ssh_finalize();
+        return;
+    }
+
+    // init the sftp connection over ssh
+    do_sftp(session);
+   
+    // connect to ftp server with ssh and show dir
+    Serial.println("Listing the contents of a directory ");
+    //sftp_new(session)
+
+
+
+    // close
+    ssh_disconnect(session);
+    ssh_free(session);
+    ssh_finalize();
+
+    return;
+    }
+    delay(10000);
 }
